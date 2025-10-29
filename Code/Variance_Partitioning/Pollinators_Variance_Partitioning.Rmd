@@ -1,0 +1,210 @@
+---
+title: "Local Pollinator Assemblages Variance Partitioning Analysis with HMSC"
+---
+
+```{r include=FALSE}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(tidyr)
+library(Hmsc)
+library(ggpubr)
+library(tibble)
+library(lubridate)
+```
+
+# Load Data for Local Pollinator Assemblage
+
+```{r}
+data_pollinator_variance_partitioning <- readRDS(paste0(here::here("Data/Data_Pollinators_Master.rds")))
+```
+
+# Prepare Data for Local Pollinator Assemblage
+
+```{r}
+VP_info_flower_visits_abundance <- data_pollinator_variance_partitioning %>% 
+  select(Unique_Observation_ID, Bombus_Queen:Syrphidae)
+```
+
+```{r}
+identical(data_pollinator_variance_partitioning$Unique_Observation_ID,
+          VP_info_flower_visits_abundance$Unique_Observation_ID)
+```
+
+```{r}
+VP_info_flower_visits_abundance <- VP_info_flower_visits_abundance %>% 
+  ungroup() %>% 
+  select(-Unique_Observation_ID)
+```
+
+```{r}
+VP_info_flower_visits_abundance_variance_standard <- VP_info_flower_visits_abundance %>% 
+  mutate(across(everything(), ~ (. - mean(.)) / sd(.)))
+# each value in the column (.) has the column mean subtracted (mean(.)) and then divided by the column standard deviation (sd(.))
+# mean of zero and standard deviation of one
+```
+
+# Basic Data Information for Variance Partitioning
+
+## Define Fixed Factors for HMSC
+
+```{r}
+VP_info_fixed_effects <- data_pollinator_variance_partitioning %>% 
+  select(Unique_Observation_ID, Observer, Time_Start, Sky, Temperature, Wind) %>%
+  mutate(Time_Start_Decimal = as.numeric(lubridate::hm(Time_Start)) / 3600) %>%
+  mutate(Sky = case_when(Sky %in% c("Clear", "Sunny") ~ "Clear",
+                         Sky %in% c("Mostly_Clear", "Mostly_Sunny", "Partly_Cloudy") ~ "Mostly_Clear",
+                         Sky %in% c("Cloudy", "Cloudy_Fog") ~ "Cloudy",
+                         TRUE ~ Sky)) %>% 
+  mutate(Temperature = case_when(Temperature %in% c("Chilly", "Not_Too_Warm", "Cool") ~ "Cool",
+                                 Temperature %in% c("Warm", "Medium") ~ "Warm",
+                                 TRUE ~ Temperature)) %>% 
+  mutate(Wind = case_when(Wind %in% c("Low", "Some", "Little") ~ "Low",
+                          Wind %in% c("Windy", "Very_Windy") ~ "Windy",
+                          TRUE ~ Wind))
+```
+
+```{r}
+identical(data_pollinator_variance_partitioning$Unique_Observation_ID,
+          VP_info_fixed_effects$Unique_Observation_ID)
+```
+
+```{r}
+VP_info_fixed_effects <- VP_info_fixed_effects %>% 
+  ungroup() %>% 
+  select(Observer, Time_Start_Decimal, Sky, Temperature, Wind) %>% 
+  mutate_at(vars(Observer, Sky, Temperature, Wind),
+            as.factor)
+```
+
+## Define Model Formula
+
+```{r}
+VP_info_model_formula_time_weather = ~ Time_Start_Decimal + Sky + Temperature + Wind
+```
+
+## Define Study Design
+
+```{r}
+VP_info_study_design <- data.frame(Population = data_pollinator_variance_partitioning$Population,
+                                   Year = data_pollinator_variance_partitioning$Year,
+                                   Sample = sprintf("Sample_%.3d",
+                                                    1:nrow(data_pollinator_variance_partitioning)),
+                                   stringsAsFactors = TRUE)
+```
+
+## Define Random Levels
+
+```{r}
+VP_info_random_level_population <- HmscRandomLevel(units = unique(VP_info_study_design$Population))
+```
+
+```{r}
+VP_info_random_level_year <- HmscRandomLevel(units = unique(VP_info_study_design$Year))
+```
+
+```{r}
+VP_info_random_level_sample <- HmscRandomLevel(units = unique(VP_info_study_design$Sample))
+```
+
+# Define HMSC Model
+
+```{r}
+model_HMSC_data_flower_visits_abundance <- Hmsc(Y = VP_info_flower_visits_abundance_variance_standard,
+                                                XData = VP_info_fixed_effects %>% 
+                                                  select(Time_Start_Decimal, Sky, Temperature, Wind),
+                                                XFormula = VP_info_model_formula_time_weather,
+                                                distr = "normal",
+                                                studyDesign = VP_info_study_design,
+                                                ranLevels = list(Population = VP_info_random_level_population,
+                                                                 Year = VP_info_random_level_year,
+                                                                 Sample = VP_info_random_level_sample))
+```
+
+# Sample MCMC
+
+```{r}
+model_HMSC_samples <- 1000
+model_HMSC_thin <- 500
+model_HMSC_adaptNf <- ceiling(0.4 * model_HMSC_samples  * model_HMSC_thin)
+model_HMSC_transient <- ceiling(0.5 * model_HMSC_samples * model_HMSC_thin)
+```
+
+```{r}
+model_HMSC_data_flower_visits_abundance <- sampleMcmc(model_HMSC_data_flower_visits_abundance,
+                                                      samples = model_HMSC_samples,
+                                                      thin = model_HMSC_thin,
+                                                      adaptNf = rep(model_HMSC_adaptNf, 3),
+                                                      transient = model_HMSC_transient,
+                                                      nChains = 2,
+                                                      nParallel = 2)
+```
+
+# Local Pollinator Assemblages Variance Partitioning Analysis
+
+```{r warning=FALSE}
+VP_model_time_weather_variance_partition <- computeVariancePartitioning(model_HMSC_data_flower_visits_abundance,
+                                                                        group = c(rep(1, 2), rep(2, 6)),
+                                                                        groupnames = c("Time_Start_Decimal", "Weather"))
+```
+
+```{r}
+data_VP_model_time_weather_variance_partition <- as.data.frame(VP_model_time_weather_variance_partition$vals) %>%
+  rownames_to_column(var = "Source_Variance") %>% 
+  pivot_longer(cols = -Source_Variance,
+               names_to = "Pollinator_Functional_Group",
+               values_to = "Variance_Proportion") %>% 
+  arrange(Pollinator_Functional_Group)
+```
+
+# Graph Variance Partitioning Analysis
+
+```{r}
+graph_VP_pollinator_abundance <- 
+data_VP_model_time_weather_variance_partition %>% 
+  mutate(Source_Variance = factor(Source_Variance, levels = c("Random: Sample", "Random: Year", "Random: Population", "Weather", "Time_Start_Decimal"))) %>%
+  mutate(Pollinator_Functional_Group = factor(Pollinator_Functional_Group, levels = c("Bombus_Worker",
+                                                                                      "Bombus_terrestris_Worker",
+                                                                                      "Honeybee",
+                                                                                      "Bombus_Queen",
+                                                                                      "Diurnal_Lepidoptera",
+                                                                                      "Large_Solitary_Bee",
+                                                                                      "Small_Solitary_Bee",
+                                                                                      "Noctuidae",
+                                                                                      "Syrphidae",
+                                                                                      "Sphingidae",
+                                                                                      "Bombyliidae",
+                                                                                      "Coleoptera",
+                                                                                      "Other"))) %>% 
+  ggplot(aes(x = Pollinator_Functional_Group, y = Variance_Proportion, fill = Source_Variance)) +
+  geom_bar(position = "stack", stat = "identity", color = "black") +
+  theme_bw(base_size = 15) +
+  theme(legend.position = "right",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 15),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 15),
+        axis.text.y = element_text(size = 15),
+        panel.grid.minor.y = element_blank()) +
+  xlab("") +
+  ylab("Proportion of Explained Variance") +
+  scale_fill_manual(values = c("#26828E", "#6ECE58", "#FDE725", "#3E4989", "#440154"),
+                    labels = c("Random: Sampling Unit (Mean = 28.5)",
+                               "Random: Year (Mean = 12.6)",
+                               "Random: Population (Mean = 32.9)",
+                               "Weather (Mean = 22.3)",
+                               "Time (Mean = 3.6)")) +
+  scale_x_discrete(labels = c("Bombus_Worker" = "Worker Bumblebees",
+                              "Bombus_terrestris_Worker" = "Nectar-Robbing Bumblebees",
+                              "Honeybee" = "Honeybees",
+                              "Bombus_Queen" = "Queen Bumblebees",
+                              "Diurnal_Lepidoptera" = "Diurnal Butterflies",
+                              "Large_Solitary_Bee" = "Large Solitary Bees",
+                              "Small_Solitary_Bee" = "Small Solitary Bees",
+                              "Noctuidae" = "Noctuid Moths",
+                              "Syrphidae" = "Hoverflies",
+                              "Sphingidae" = "Sphingid Moths",
+                              "Bombyliidae" = "Bee Flies",
+                              "Coleoptera" = "Coleoptera",
+                              "Other" = "Other"))
+```

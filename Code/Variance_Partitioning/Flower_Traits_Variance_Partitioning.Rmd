@@ -1,0 +1,301 @@
+---
+title: "Pollination Traits Variance Partitioning Analysis with HMSC"
+---
+
+```{r include=FALSE}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(tidyr)
+library(Hmsc)
+library(ggpubr)
+library(tibble)
+library(lubridate)
+```
+
+# Load Data for Pollination Traits
+
+```{r}
+data_flower_traits_log_scale <- readRDS(paste0(here::here("Data/Data_Pollination_Traits_Master.rds")))
+```
+
+# Prepare Data for HMSC Model
+
+## Estimate Inflorescence Reproductive Stage
+
+```{r}
+data_flower_traits_log_scale <- data_flower_traits_log_scale %>% 
+  mutate(Inflorescence_Output = rowSums(across(c(Total_Flowers, Capsules_Traits)), na.rm = TRUE),
+         Inflorescence_Potential = rowSums(across(c(Total_Flowers, Capsules_Traits, Buds_Traits, Buds_Eaten_Traits)), na.rm = TRUE),
+         Inflorescence_Stage = Inflorescence_Output / Inflorescence_Potential)
+```
+
+## Define Fixed Factors for HMSC
+
+```{r}
+VP_info_fixed_effects <- data_flower_traits_log_scale %>% 
+  select(Inflorescence_Stage, Date) %>%
+  mutate(Date = lubridate::dmy(Date),
+         Date_Initial = lubridate::make_date(lubridate::year(Date), 1, 1), # creates a date object for January 1 of the relevant year
+         Date_Numeric = as.numeric(Date - Date_Initial))
+```
+
+## Define Model Formula
+
+```{r}
+VP_info_model_formula = ~ Inflorescence_Stage
+```
+
+## Define Study Design
+
+```{r}
+VP_info_study_design <- data.frame(Population = data_flower_traits_log_scale$Population,
+                                   Year = data_flower_traits_log_scale$Year,
+                                   Plant_ID = data_flower_traits_log_scale$Plant_ID,
+                                   Sample = sprintf("Sample_%.3d",
+                                                    1:nrow(data_flower_traits_log_scale)),
+                                   stringsAsFactors = TRUE)
+```
+
+## Define Random Levels
+
+```{r}
+VP_info_random_level_population <- HmscRandomLevel(units = unique(VP_info_study_design$Population))
+```
+
+```{r}
+VP_info_random_level_year <- HmscRandomLevel(units = unique(VP_info_study_design$Year))
+```
+
+```{r}
+VP_info_random_level_plant <- HmscRandomLevel(units = unique(VP_info_study_design$Plant_ID))
+```
+
+```{r}
+VP_info_random_level_sample <- HmscRandomLevel(units = unique(VP_info_study_design$Sample))
+```
+
+# Define HMSC Model
+
+```{r}
+model_HMSC_data_flower_traits <- Hmsc(Y = data_flower_traits_log_scale %>% 
+                                        select(log_Stem_Height, log_Total_Flowers, log_Corolla_Diameter, log_Tube_Length, log_Tube_Width, log_NSD),
+                                      XData = VP_info_fixed_effects %>% 
+                                        select(Inflorescence_Stage),
+                                      XFormula = VP_info_model_formula,
+                                      distr = "normal",
+                                      studyDesign = VP_info_study_design,
+                                      ranLevels = list(Population = VP_info_random_level_population,
+                                                       Year = VP_info_random_level_year,
+                                                       Plant_ID = VP_info_random_level_plant,
+                                                       Sample = VP_info_random_level_sample))
+```
+
+# Sample MCMC
+
+```{r}
+model_HMSC_samples <- 500
+model_HMSC_thin <- 50
+model_HMSC_adaptNf <- ceiling(0.4 * model_HMSC_samples  * model_HMSC_thin)
+model_HMSC_transient <- ceiling(0.5 * model_HMSC_samples * model_HMSC_thin)
+```
+
+```{r}
+model_HMSC_data_flower_traits <- sampleMcmc(model_HMSC_data_flower_traits,
+                                            samples = model_HMSC_samples,
+                                            thin = model_HMSC_thin,
+                                            adaptNf = rep(model_HMSC_adaptNf, 4),
+                                            transient = model_HMSC_transient,
+                                            nChains = 2,
+                                            nParallel = 2)
+```
+
+# Pollination Traits Variance Partitioning Analysis
+
+```{r warning=FALSE}
+VP_model_inflo_stage_variance_partition <- computeVariancePartitioning(model_HMSC_data_flower_traits)
+```
+
+```{r}
+data_VP_model_inflo_stage_variance_partition <- as.data.frame(VP_model_inflo_stage_variance_partition$vals) %>%
+  rownames_to_column(var = "Source_Variance") %>% 
+  pivot_longer(cols = -Source_Variance,
+               names_to = "Flower_Trait",
+               values_to = "Variance_Proportion") %>% 
+  arrange(Flower_Trait)
+```
+
+# Graph Variance Partitioning Analysis
+
+```{r}
+graph_VP_pollination_traits <-
+data_VP_model_inflo_stage_variance_partition %>% 
+  mutate(Source_Variance = factor(Source_Variance, levels = c("Random: Sample", "Random: Plant_ID", "Random: Year", "Random: Population", "Inflorescence_Stage"))) %>% 
+  mutate(Flower_Trait = factor(Flower_Trait, levels = c("log_Stem_Height",
+                                                        "log_Total_Flowers",
+                                                        "log_Corolla_Diameter",
+                                                        "log_Tube_Length",
+                                                        "log_Tube_Width",
+                                                        "log_NSD"))) %>% 
+  ggplot(aes(x = Flower_Trait, y = Variance_Proportion, fill = Source_Variance)) +
+  geom_bar(position = "stack", stat = "identity", color = "black") +
+  theme_bw(base_size = 15) +
+  theme(legend.position = "right",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 15),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 15),
+        axis.text.y = element_text(size = 15)) +
+  ylab("Proportion of Explained Variance") +
+  xlab("") +
+  scale_fill_manual(values = c("#26828E", "#FB9B06", "#6ECE58", "#FDE725", "#000004"),
+                    labels = c("Random: Sampling Unit (Mean = 24.2)",
+                               "Random: Plant ID (Mean = 20.6)",
+                               "Random: Year (Mean = 35.0)",
+                               "Random: Population (Mean = 16.5)",
+                               "Inflorescence Stage (Mean = 3.7)")) +
+  scale_x_discrete(labels=c("Inflorescence Length", "Flower Number", "Corolla Diameter", "Tube Length", "Tube Width", "Nectary-Stigma Distance"))
+```
+
+# Proportional Divergence (dP) of Pollination Traits
+
+## Obtain Omega Parameter for Pollination Traits
+
+```{r}
+VP_model_inflo_stage_omega_population <- getPostEstimate(model_HMSC_data_flower_traits, parName = "Omega", r = 1)$mean
+
+rownames(VP_model_inflo_stage_omega_population) <- colnames(model_HMSC_data_flower_traits$Y)
+colnames(VP_model_inflo_stage_omega_population) <- colnames(model_HMSC_data_flower_traits$Y)
+```
+
+```{r}
+VP_model_inflo_stage_omega_year <- getPostEstimate(model_HMSC_data_flower_traits, parName = "Omega", r = 2)$mean
+
+rownames(VP_model_inflo_stage_omega_year) <- colnames(model_HMSC_data_flower_traits$Y)
+colnames(VP_model_inflo_stage_omega_year) <- colnames(model_HMSC_data_flower_traits$Y)
+```
+
+## Estimate dP
+
+```{r}
+data_dP <- data.frame(Trait = rep(colnames(model_HMSC_data_flower_traits$Y), 2),
+                      Source = c(rep("Population", 6), rep("Year", 6)),
+                      d = c(diag(VP_model_inflo_stage_omega_population), diag(VP_model_inflo_stage_omega_year)))
+```
+
+```{r}
+data_dP <- data_dP %>% 
+  mutate(dP = exp(sqrt(d) * sqrt(1 / (2 * pi))))
+```
+
+## Convert HMSC Model to Coda Object
+
+```{r}
+VP_model_inflo_stage_coda <- convertToCodaObject(model_HMSC_data_flower_traits)
+```
+
+## Estimate SE for dP
+
+```{r}
+extract_diag_raw <- function(omega_block, block_label = NULL) {
+  omega_mat <- as.matrix(omega_block)
+  cn <- colnames(omega_mat)
+  
+  # Get Text Inside Brackets, e.g. "log_Stem_Height (S1), log_Stem_Height (S1)"
+  inside <- sub("^.*\\[", "", cn)
+  inside <- sub("\\]$", "", inside)
+  parts <- strsplit(inside, ",")
+  trim <- function(x) gsub("^\\s+|\\s+$", "", x)
+  
+  left  <- sapply(parts, function(p) trim(p[1]))
+  right <- sapply(parts, function(p) if(length(p) >= 2) trim(p[2]) else NA)
+  
+  # Select Diagonal Terms Only
+  diag_idx <- which(!is.na(right) & left == right)
+  if (length(diag_idx) == 0) return(data.frame()) 
+  
+  samples <- omega_mat[, diag_idx, drop = FALSE]
+  niter <- nrow(samples)
+  
+  # Clean Trait Names (Remove The "(S#)" Part)
+  traits <- sub("\\s*\\(S\\d+\\)$", "", left[diag_idx])
+  
+  # Build Tidy Data Frame
+  out <- do.call(rbind, lapply(seq_along(traits), function(j) {
+    data.frame(Random_Effect = if (is.null(block_label)) "Omega" else block_label,
+               Trait = traits[j],
+               Iteration = seq_len(niter),
+               Value = samples[, j],
+               stringsAsFactors = FALSE)
+  }))
+  
+  rownames(out) <- NULL
+  out
+}
+```
+
+```{r}
+data_posterior_omega <- rbind(extract_diag_raw(VP_model_inflo_stage_coda$Omega[[1]], block_label = "Population"),
+                              extract_diag_raw(VP_model_inflo_stage_coda$Omega[[2]], block_label = "Year"),
+                              extract_diag_raw(VP_model_inflo_stage_coda$Omega[[3]], block_label = "Plant_ID"),
+                              extract_diag_raw(VP_model_inflo_stage_coda$Omega[[4]], block_label = "Sample"))
+```
+
+```{r}
+data_posterior_omega <- data_posterior_omega %>% 
+  mutate(dP = exp(sqrt(Value) * sqrt(1 / (2 * pi))))
+```
+
+```{r}
+data_posterior_omega_SE <- data_posterior_omega %>% 
+  group_by(Random_Effect, Trait) %>% 
+  summarise(n = n(),
+            Mean = mean(dP),
+            SE = sd(dP),
+            .groups = "drop")
+```
+
+```{r}
+data_dP <- left_join(data_dP,
+                     data_posterior_omega_SE,
+                     by = c("Trait" = "Trait",
+                            "Source" = "Random_Effect"))
+```
+
+## Graph
+
+```{r}
+graph_flower_traits_proportional_divergence <-
+data_dP %>%
+  mutate(Trait = factor(Trait, levels = c("log_Stem_Height", "log_Total_Flowers", "log_Corolla_Diameter",
+                                          "log_Tube_Length", "log_Tube_Width", "log_NSD"))) %>%
+  mutate(Source = factor(Source, levels = c("Year", "Population"))) %>%
+  ggplot(aes(x = Trait, y = dP, color = Source)) +
+  geom_segment(aes(x = 1, xend = 3,
+                   y = 1.071264, yend = 1.071264),
+               color = "black", linetype = "solid", linewidth = 1) +
+  geom_segment(aes(x = 4, xend = 6,
+                   y = 1.031214, yend = 1.031214),
+               color = "black", linetype = "solid", linewidth = 1) +
+  geom_point(position = position_dodge(width = 0.75), size = 5) +
+  geom_errorbar(aes(ymin = dP - SE, ymax = dP + SE), position = position_dodge(0.75), width = 0.5, linewidth = 1) +
+  theme_bw(base_size = 15) +
+  theme(legend.position = "right",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 15),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 15),
+        axis.text.y = element_text(size = 15),
+        panel.grid.minor.y = element_blank()) +
+  xlab("") +
+  ylab("Proportional Divergence (dP)") +
+  scale_color_manual(values = c("#6ECE58", "#FDE725"),
+                     labels = c("Year (Mean = 1.064)",
+                                "Population (Mean = 1.038)")) +
+  scale_x_discrete(labels = c("log_Stem_Height" = "Inflorescence Length",
+                              "log_Total_Flowers" = "Flower Number",
+                              "log_Corolla_Diameter" = "Corolla Diameter",
+                              "log_Tube_Length" = "Tube Length",
+                              "log_Tube_Width" = "Tube Width",
+                              "log_NSD" = "Nectary-Stigma Distance ")) +
+  scale_y_log10(limits = c(1, 1.15), breaks = seq(1, 1.15, by = 0.05))
+```

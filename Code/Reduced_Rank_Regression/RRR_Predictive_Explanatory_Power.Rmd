@@ -1,0 +1,98 @@
+---
+title: "REDUCED-RANK REGRESSION IN HMSC: Predictive and Explanatory Power"
+---
+
+```{r include=FALSE}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(tidyr)
+library(Hmsc)
+library(stringr)
+library(mgcv)
+library(ggpubr)
+library(tibble)
+```
+
+# Load HMSC Model
+
+## Number of Flower Visits
+
+```{r}
+RRR_model_abundance <- readRDS(paste0(here::here("Data/RRR_Model_Abundance.rds")))
+```
+
+```{r}
+RRR_model_abundance_predicted_values <- computePredictedValues(RRR_model_abundance, expected = TRUE)
+```
+
+```{r}
+RRR_model_abundance_performance_RMSE_R2 <- 
+  data.frame(Variable = colnames(RRR_model_abundance_predicted_values),
+             RMSE = evaluateModelFit(hM = RRR_model_abundance, predY = RRR_model_abundance_predicted_values)$RMSE,
+             R2 = evaluateModelFit(hM = RRR_model_abundance, predY = RRR_model_abundance_predicted_values)$R2)
+```
+
+## Obtain Mean Value of Beta Parameter for Pollination Traits
+
+```{r}
+RRR_model_abundance_beta <- getPostEstimate(RRR_model_abundance, parName = "Beta")
+```
+
+# Cross-Validation
+
+## Number of Flower Visits
+
+```{r}
+RRR_model_abundance_partition <- createPartition(RRR_model_abundance, nfolds = 10, column = "Population")
+```
+
+```{r}
+RRR_model_abundance_cross_validate <- computePredictedValues(RRR_model_abundance,
+                                                             partition = RRR_model_abundance_partition,
+                                                             nParallel = 2)
+```
+
+```{r}
+RRR_model_abundance_performance_RMSE_R2 <- 
+  data.frame(Variable = colnames(RRR_model_abundance$Y),
+             RMSE = evaluateModelFit(hM = RRR_model_abundance, predY = RRR_model_abundance_cross_validate)$RMSE,
+             R2 = evaluateModelFit(hM = RRR_model_abundance, predY = RRR_model_abundance_cross_validate)$R2)
+```
+
+# Explanatory Power
+
+```{r}
+RRR_model_abundance_weighted_sum_values <- readRDS(paste0(here::here("Data/RRR_Pollinator_Assemblage_Axis.rds")))
+```
+
+## Number of Visits
+
+```{r}
+RRR_model_abundance$X <- RRR_model_abundance$X %>% 
+  as.data.frame() %>% 
+  mutate(XRRR_1 = RRR_model_abundance_weighted_sum_values[, 1],
+         XRRR_2 = RRR_model_abundance_weighted_sum_values[, 2]) %>% 
+  as.matrix()
+```
+
+```{r warning=FALSE}
+VP_RRR_model_abundance <- computeVariancePartitioning(RRR_model_abundance,
+                                                      group = c(rep(1, 2), rep(2, 1)),
+                                                      groupnames = c("XRRR_1", "XRRR_2"))
+```
+
+```{r}
+data_VP_RRR_model_abundance <- as.data.frame(VP_RRR_model_abundance$vals) %>%
+  rownames_to_column(var = "Source_Variance") %>% 
+  pivot_longer(cols = -Source_Variance,
+               names_to = "Trait",
+               values_to = "Variance_Proportion")
+```
+
+```{r}
+data_VP_RRR_model_abundance <- data_VP_RRR_model_abundance %>% 
+  mutate(R2 = mean(RRR_model_abundance_performance_RMSE_R2$R2),
+         R2_RRR = Variance_Proportion * R2)
+```
