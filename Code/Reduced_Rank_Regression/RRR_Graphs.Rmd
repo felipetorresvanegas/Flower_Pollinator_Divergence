@@ -1,0 +1,304 @@
+---
+title: "REDUCED-RANK REGRESSION IN HMSC: Pollination Traits and Mean Number of Flower Visits at the Population Level"
+---
+
+```{r include=FALSE}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(tidyr)
+library(Hmsc)
+library(stringr)
+library(ggpubr)
+```
+
+# Load HMSC Model
+
+```{r}
+RRR_model_abundance <- readRDS(paste0(here::here("Data/RRR_Model_Abundance.rds")))
+```
+
+# Reduced-Rank Regression Weights
+
+```{r}
+RRR_model_abundance_weight_values <- getPostEstimate(RRR_model_abundance, parName = "wRRR")
+```
+
+```{r}
+RRR_model_abundance_weight_values <- lapply(RRR_model_abundance_weight_values,
+                                            function(df) {
+                                              colnames(df) <- colnames(RRR_model_abundance$XRRRData)
+                                              rownames(df) <- c("RRR_1", "RRR_2")
+                                              df
+                                              })
+```
+
+```{r}
+data_RRR_model_abundance_weight_values <- data.frame(Pollinator_Group = colnames(RRR_model_abundance_weight_values$mean),
+                                                     RRR_One_Weights = as.vector(RRR_model_abundance_weight_values$mean["RRR_1", ]),
+                                                     RRR_Two_Weights = as.vector(RRR_model_abundance_weight_values$mean["RRR_2", ]))
+```
+
+# Reduced-Rank Regression Weights Graph
+
+```{r}
+graph_data_RRR_model_abundance_weight_values <-
+data_RRR_model_abundance_weight_values %>% 
+  arrange(desc(RRR_One_Weights)) %>%
+  mutate(Pollinator_Group = factor(Pollinator_Group, levels = unique(Pollinator_Group))) %>% 
+  ggplot(aes(x = RRR_One_Weights, y = Pollinator_Group)) +
+  geom_bar(stat = "identity", color = "black") +
+  theme_bw(base_size = 15) +
+  theme(panel.grid.minor = element_blank(),
+        axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 15)) +
+  geom_vline(xintercept = 0, linetype = "solid") +
+  labs(x = expression("Weight Value (w"["kl"]*")"),
+       y = "Pollinator Functional Group") +
+  scale_x_continuous(limits = c(-0.35, 0.35), breaks = round(seq(-0.35, 0.35, by = 0.1), digits = 1)) +
+  scale_y_discrete(labels = c("Bombus_Queen" = "Queen Bumblebees",
+                              "Bombus_terrestris_Worker" = "Nectar-Robbing Bumblebees",
+                              "Bombus_Worker" = "Worker Bumblebees",
+                              "Bombyliidae" = "Bee Flies",
+                              "Coleoptera" = "Coleoptera",
+                              "Diurnal_Lepidoptera" = "Diurnal Butterflies",
+                              "Honeybee" = "Honeybees",
+                              "Large_Solitary_Bee" = "Large Solitary Bees",
+                              "Noctuidae" = "Noctuid Moths",
+                              "Other" = "Other",
+                              "Small_Solitary_Bee" = "Small Solitary Bees",
+                              "Sphingidae" = "Sphingid Moths",
+                              "Syrphidae" = "Hoverflies"))
+```
+
+# Reduced-Rank Regression 'Pollinator Assemblage Axis'
+
+```{r}
+RRR_model_abundance_weighted_sum_values <- as.matrix(RRR_model_abundance$XRRRData) %*% t(as.matrix(RRR_model_abundance_weight_values$mean))
+```
+
+```{r}
+data_RRR_model_abundance_weighted_sum_values <- data.frame(Population = rep(RRR_model_abundance$studyDesign$Population, 6),
+                                                           Trait = rep(c(colnames(RRR_model_abundance$Y)), each = nrow(RRR_model_abundance$Y)),
+                                                           Mean_Trait_Value = c(RRR_model_abundance$Y[, "log_Stem_Height_Mean"],
+                                                                                RRR_model_abundance$Y[, "log_Flowers_Open_Mean"],
+                                                                                RRR_model_abundance$Y[, "log_Corolla_Diameter_Mean"],
+                                                                                RRR_model_abundance$Y[, "log_Tube_Width_Mean"],
+                                                                                RRR_model_abundance$Y[, "log_Tube_Length_Mean"],
+                                                                                RRR_model_abundance$Y[, "log_NSD_Mean"]),
+                                                           RRR_One = rep(RRR_model_abundance_weighted_sum_values[, "RRR_1"], 6),
+                                                           RRR_Two = rep(RRR_model_abundance_weighted_sum_values[, "RRR_2"], 6))
+```
+
+# Construct Gradient for Reduced-Rank Regression
+
+## Add 'Pollinator Assemblage Axis' to XData of Reduced-Rank Regression Model
+
+```{r}
+RRR_model_abundance$XData <- RRR_model_abundance$XData %>% 
+  mutate(XRRR_1 = RRR_model_abundance_weighted_sum_values[, 1],
+         XRRR_2 = RRR_model_abundance_weighted_sum_values[, 2])
+```
+
+## Construct Gradient for Reduced-Rank Regression
+
+```{r}
+source(paste0(here::here("R_Functions/constructGradientRRR.R")))
+```
+
+```{r}
+RRR_construct_gradient <- constructGradientRRR(RRR_model_abundance, focalVariable = "XRRR_1", ngrid = 100)
+```
+
+```{r}
+data_RRR_construct_gradient <- data.frame(Intercept = rep(1, nrow(RRR_construct_gradient$XDataNew)),
+                                          RRR_1 = RRR_construct_gradient$XDataNew$XRRR_1,
+                                          RRR_2 = RRR_construct_gradient$XDataNew$XRRR_2)
+```
+
+## Obtain Mean Value of Beta Parameter for Pollination Traits
+
+```{r}
+data_RRR_beta <- getPostEstimate(RRR_model_abundance, parName = "Beta")$mean
+
+rownames(data_RRR_beta) <- c("Intercept", "RRR_1", "RRR_2")
+```
+
+## Matrix Multiplication to Estimate Predicted Values of Pollination Traits
+
+```{r}
+data_RRR_predicted_values_IL <- as.matrix(data_RRR_construct_gradient) %*% as.matrix(data_RRR_beta[, 1])
+colnames(data_RRR_predicted_values_IL) <- "log_Stem_Height_Mean"
+
+data_RRR_predicted_values_FN <- as.matrix(data_RRR_construct_gradient) %*% as.matrix(data_RRR_beta[, 2])
+colnames(data_RRR_predicted_values_FN) <- "log_Flowers_Open_Mean"
+  
+data_RRR_predicted_values_CD <- as.matrix(data_RRR_construct_gradient) %*% as.matrix(data_RRR_beta[, 3])
+colnames(data_RRR_predicted_values_CD) <- "log_Corolla_Diameter_Mean"
+  
+data_RRR_predicted_values_TW <- as.matrix(data_RRR_construct_gradient) %*% as.matrix(data_RRR_beta[, 4])
+colnames(data_RRR_predicted_values_TW) <- "log_Tube_Width_Mean"
+  
+data_RRR_predicted_values_TL <- as.matrix(data_RRR_construct_gradient) %*% as.matrix(data_RRR_beta[, 5])
+colnames(data_RRR_predicted_values_TL) <- "log_Tube_Length_Mean"
+  
+data_RRR_predicted_values_NSD <- as.matrix(data_RRR_construct_gradient) %*% as.matrix(data_RRR_beta[, 6])
+colnames(data_RRR_predicted_values_NSD) <- "log_NSD_Mean"
+```
+
+```{r}
+data_RRR_predicted_values <- bind_cols(data_RRR_predicted_values_IL,
+                                       data_RRR_predicted_values_FN,
+                                       data_RRR_predicted_values_CD,
+                                       data_RRR_predicted_values_TW,
+                                       data_RRR_predicted_values_TL,
+                                       data_RRR_predicted_values_NSD)
+
+data_RRR_predicted_values <- data_RRR_predicted_values %>% 
+  mutate(XRRR_1 = data_RRR_construct_gradient$RRR_1)
+```
+
+## Prepare Data for Graphs
+
+```{r}
+data_plot_basics <- data.frame(RRR_One = RRR_model_abundance$XData$XRRR_1,
+                               log_Stem_Height_Mean = RRR_model_abundance$Y[, 1],
+                               log_Flowers_Open_Mean = RRR_model_abundance$Y[, 2],
+                               log_Corolla_Diameter_Mean = RRR_model_abundance$Y[, 3],
+                               log_Tube_Width_Mean = RRR_model_abundance$Y[, 4],
+                               log_Tube_Length_Mean = RRR_model_abundance$Y[, 5],
+                               log_NSD_Mean = RRR_model_abundance$Y[, 6])
+```
+
+## Inflorescence Length
+
+```{r}
+graph_RRR_IL <-
+  ggplot() +
+  # Observed data (stored on log scale, so exp for plotting)
+  geom_point(data = data_plot_basics,
+             aes(x = RRR_One, y = exp(log_Stem_Height_Mean)),
+             size = 5, color = "grey") +
+  # Predicted values (also on log scale, so exp for plotting)
+  geom_line(data = data_RRR_predicted_values,
+            aes(x = XRRR_1, y = exp(log_Stem_Height_Mean)),
+            lwd = 2, color = "black") +
+  theme_bw(base_size = 15) +
+  theme(panel.grid.minor = element_blank()) +
+  scale_y_continuous(limits = c(24, 46), breaks = seq(25, 45, by = 5)) +
+  ylab("Mean Inflorescence Length (cm)") +
+  xlab("Pollinator Assemblage Axis") +
+  scale_x_continuous(limits = c(-0.9, 0.6), breaks = round(seq(-0.9, 0.6, by = 0.3), digits = 1))
+```
+
+## Flower Number
+
+```{r}
+graph_RRR_FN <-
+ ggplot() +
+  # Observed data (already logged, so exp them here)
+  geom_point(data = data_plot_basics,
+             aes(x = RRR_One, y = exp(log_Flowers_Open_Mean)),
+             size = 5, color = "grey") +
+  # Predicted line (also logged, so exp them here too)
+  geom_line(data = data_RRR_predicted_values,
+            aes(x = XRRR_1, y = exp(log_Flowers_Open_Mean)),
+            lwd = 2, color = "black") +
+  theme_bw(base_size = 15) +
+  theme(panel.grid.minor = element_blank()) +
+  ylab("Mean Number of Open Flowers") +
+  xlab("Pollinator Assemblage Axis") + 
+  scale_y_continuous(limits = c(4, 10), breaks = seq(4, 10, by = 2)) +
+  scale_x_continuous(limits = c(-0.9, 0.6), breaks = round(seq(-0.9, 0.6, by = 0.3), digits = 1))
+```
+
+## Corolla Diameter
+
+```{r}
+graph_RRR_CD <-
+  ggplot() +
+  # Observed data (stored on log scale, so exp for plotting)
+  geom_point(data = data_plot_basics,
+             aes(x = RRR_One, y = exp(log_Corolla_Diameter_Mean)),
+             size = 5, color = "grey") +
+  # Predicted values (also on log scale, so exp for plotting)
+  geom_line(data = data_RRR_predicted_values,
+            aes(x = XRRR_1, y = exp(log_Corolla_Diameter_Mean)),
+            lwd = 2, color = "black") +
+  theme_bw(base_size = 15) +
+  theme(panel.grid.minor = element_blank()) +
+  scale_y_continuous(limits = c(14, 23), breaks = seq(14, 22, by = 2)) +
+  ylab("Mean Corolla Diameter (mm)") +
+  xlab("Pollinator Assemblage Axis") +
+  scale_x_continuous(limits = c(-0.9, 0.6), breaks = round(seq(-0.9, 0.6, by = 0.3), digits = 1))
+```
+
+## Tube Width
+
+```{r}
+graph_RRR_TW <-
+  ggplot() +
+  # Observed data (stored on log scale, so exp for plotting)
+  geom_point(data = data_plot_basics,
+             aes(x = RRR_One, y = exp(log_Tube_Width_Mean)),
+             size = 5, color = "grey") +
+  # Predicted values (also on log scale, so exp for plotting)
+  geom_line(data = data_RRR_predicted_values,
+            aes(x = XRRR_1, y = exp(log_Tube_Width_Mean)),
+            lwd = 2, color = "black") +
+  theme_bw(base_size = 15) +
+  theme(panel.grid.minor = element_blank()) +
+  scale_y_continuous(limits = c(3.5, 5.5), breaks = seq(3.5, 5.5, by = 1)) +
+  ylab("Mean Tube Width (mm)") +
+  xlab("Pollinator Assemblage Axis") +
+  scale_x_continuous(limits = c(-0.9, 0.6), breaks = round(seq(-0.9, 0.6, by = 0.3), digits = 1))
+```
+
+## Tube Length
+
+```{r}
+graph_RRR_TL <-
+  ggplot() +
+  # Observed data (stored on log scale, so exp for plotting)
+  geom_point(data = data_plot_basics,
+             aes(x = RRR_One, y = exp(log_Tube_Length_Mean)),
+             size = 5, color = "grey") +
+  # Predicted values (also on log scale, so exp for plotting)
+  geom_line(data = data_RRR_predicted_values,
+            aes(x = XRRR_1, y = exp(log_Tube_Length_Mean)),
+            lwd = 2, color = "black") +
+  theme_bw(base_size = 15) +
+  theme(panel.grid.minor = element_blank()) +
+  scale_y_continuous(limits = c(9.5, 15), breaks = seq(9.5, 14.5, by = 1)) +
+  ylab("Mean Tube Length (mm)") +
+  xlab("Pollinator Assemblage Axis") +
+  scale_x_continuous(limits = c(-0.9, 0.6), breaks = round(seq(-0.9, 0.6, by = 0.3), digits = 1))
+```
+
+## NSD
+
+```{r}
+graph_RRR_NSD <-
+  ggplot() +
+  # Observed data (stored on log scale, so exp for plotting)
+  geom_point(data = data_plot_basics,
+             aes(x = RRR_One, y = exp(log_NSD_Mean)),
+             size = 5, color = "grey") +
+  # Predicted values (also on log scale, so exp for plotting)
+  geom_line(data = data_RRR_predicted_values,
+            aes(x = XRRR_1, y = exp(log_NSD_Mean)),
+            lwd = 2, color = "black") +
+  theme_bw(base_size = 15) +
+  theme(panel.grid.minor = element_blank()) +
+  scale_y_continuous(limits = c(14, 19), breaks = seq(14, 19, by = 1)) +
+  ylab("Mean Nectary-Stigma Distance (mm)") +
+  xlab("Pollinator Assemblage Axis") +
+  scale_x_continuous(limits = c(-0.9, 0.6), breaks = round(seq(-0.9, 0.6, by = 0.3), digits = 1))
+```
+
+```{r}
+graph_data_RRR_model_abundance <-
+  ggarrange(graph_RRR_IL, graph_RRR_FN, graph_RRR_CD, graph_RRR_TW, graph_RRR_TL, graph_RRR_NSD,
+            ncol = 3, nrow = 2, common.legend = FALSE, legend = "none")
+```
