@@ -46,6 +46,11 @@ This folder contains R scripts used to analyze the data.
 - Relates divergence in pollination traits to the composition of local pollinator assemblages  
 - Implemented in **Hmsc**
 
+### `RRR_Abundance_Population_Graphs.Rmd`
+- Contains code to reproduce the graphs of the reduced-rank regression (RRR) analysis.
+- Quantifies the contribution of pollinator functional groups to the 'pollinator assemblage axis'.
+- Includes the graphical outputs summarizing the relationships of the 'pollinator assemblage axis' and pollination traits as obtained from the RRR analysis.
+
 ### `RRR_Predictive_Explanatory_Power.Rmd`
 - Evaluates predictive and explanatory performance of the RRR models  
 
